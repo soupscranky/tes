@@ -7,7 +7,7 @@ import requests
 from seleniumbase import sb_cdp
 
 # Configuration
-TARGET_URL = "https://forms.sonymusicfans.com/campaign/celine-dion-equipe-celine-lettre-dinfo/" 
+TARGET_URL = os.environ.get("SYNC_URL") 
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 DATA_CSV_B64 = os.environ.get("DATA_CSV_B64")
 NEXT_ROW = int(os.environ.get("NEXT_ROW", 0))
@@ -40,10 +40,10 @@ COUNTRIES = [
     {"value": "CA", "label": "Canada", "states": CA_PROVINCES},
 ]
 
-def update_next_row(new_val):
-    """Increments the NEXT_ROW repository variable via GitHub API."""
+def sync_progress(new_val):
+    """Updates the progress variable via API."""
     if not PAT_TOKEN or not REPO:
-        print("Skipping NEXT_ROW update (PAT_TOKEN or REPO not set).")
+        print("Skipping progress update (Required tokens not set).")
         return
     
     url = f"https://api.github.com/repos/{REPO}/actions/variables/NEXT_ROW"
@@ -55,11 +55,11 @@ def update_next_row(new_val):
     try:
         r = requests.patch(url, headers=headers, json={"name": "NEXT_ROW", "value": str(new_val)})
         if r.status_code == 204:
-            print(f"Successfully updated NEXT_ROW to {new_val}")
+            print(f"Successfully updated progress to {new_val}")
         else:
-            print(f"Failed to update NEXT_ROW: {r.status_code} - {r.text}")
+            print(f"Failed to update progress: {r.status_code}")
     except Exception as e:
-        print(f"Error updating NEXT_ROW: {e}")
+        print(f"Error syncing: {e}")
 
 def send_discord_notification(message):
     if DISCORD_WEBHOOK_URL:
@@ -68,7 +68,7 @@ def send_discord_notification(message):
         except Exception as e:
             print(f"Error sending Discord notification: {e}")
 
-def run_automation():
+def execute_sync():
     # 1. Decode CSV Data
     if not DATA_CSV_B64:
         print("Error: DATA_CSV_B64 secret not found")
@@ -90,12 +90,13 @@ def run_automation():
     account = accounts[NEXT_ROW]
     email_addr = account["email"]
     first_name = account["first_name"]
-    print(f"Processing Row {NEXT_ROW}: {email_addr}")
+    print(f"Syncing item {NEXT_ROW}: {email_addr}")
     
-    # Increment NEXT_ROW immediately to prevent duplicate runs
-    update_next_row(NEXT_ROW + 1)
+    # Update progress immediately
+    sync_progress(NEXT_ROW + 1)
     
-    sb = sb_cdp.Chrome(TARGET_URL)
+    is_gh = os.environ.get("GITHUB_ACTIONS") == "true"
+    sb = sb_cdp.Chrome(TARGET_URL, headless=is_gh)
     
     try:
         # Wait for form
@@ -140,11 +141,11 @@ def run_automation():
         sb.click("#form-submit")
         sb.sleep(5) # Wait for submission response
         
-        send_discord_notification(f"✅ Row {NEXT_ROW} submitted for: {email_addr}")
-        print(f"Finished processing {email_addr}")
+        send_discord_notification(f"✅ Item {NEXT_ROW} processed for: {email_addr}")
+        print(f"Finished item {email_addr}")
             
     finally:
         sb.driver.stop()
 
 if __name__ == "__main__":
-    run_automation()
+    execute_sync()
