@@ -1,0 +1,42 @@
+name: Form Automation (Bot)
+
+on:
+  repository_dispatch:
+    types: [run-bot]
+  workflow_dispatch:
+
+jobs:
+  automate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Get NEXT_ROW Variable
+        id: vars
+        run: |
+          # Fetch the NEXT_ROW variable from repo variables
+          # This step is redundant if we pass it directly from secrets/vars, 
+          # but let's ensure we have the latest.
+          echo "NEXT_ROW=${{ vars.NEXT_ROW }}" >> $GITHUB_ENV
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          seleniumbase install chromedriver
+
+      - name: Run automation
+        env:
+          DATA_CSV_B64: ${{ secrets.DATA_CSV_B64 }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+          NEXT_ROW: ${{ env.NEXT_ROW }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python automation.py
