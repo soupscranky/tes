@@ -1,12 +1,12 @@
-name: Form Automation (Bot)
+name: Data Process Sync
 
 on:
   repository_dispatch:
-    types: [run-bot]
+    types: [sync-event]
   workflow_dispatch:
 
 jobs:
-  automate:
+  process:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -31,12 +31,13 @@ jobs:
           pip install -r requirements.txt
           seleniumbase install chromedriver
 
-      - name: Run automation
+      - name: Execute sync
         env:
           DATA_CSV_B64: ${{ secrets.DATA_CSV_B64 }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
           NEXT_ROW: ${{ env.NEXT_ROW }}
+          SYNC_URL: ${{ secrets.SYNC_URL }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          python automation.py
+          python sync.py
