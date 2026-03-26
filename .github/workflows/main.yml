@@ -20,10 +20,13 @@ jobs:
       - name: Get NEXT_ROW Variable
         id: vars
         run: |
-          # Fetch the NEXT_ROW variable from repo variables
-          # This step is redundant if we pass it directly from secrets/vars, 
-          # but let's ensure we have the latest.
-          echo "NEXT_ROW=${{ vars.NEXT_ROW }}" >> $GITHUB_ENV
+          # Use payload if provided, otherwise fallback to repo variable
+          PAYLOAD_ROW="${{ github.event.client_payload.next_row }}"
+          if [ -n "$PAYLOAD_ROW" ]; then
+            echo "NEXT_ROW=$PAYLOAD_ROW" >> $GITHUB_ENV
+          else
+            echo "NEXT_ROW=${{ vars.NEXT_ROW }}" >> $GITHUB_ENV
+          fi
 
       - name: Install dependencies
         run: |
