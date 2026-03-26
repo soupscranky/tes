@@ -131,10 +131,20 @@ def execute_sync():
         
         # Submit
         sb.click("#form-submit")
-        sb.sleep(6) # Give it time to finish
+        sb.sleep(2)
         
-        send_discord_notification(f"✅ Sync #{NEXT_ROW} successful: {email_addr} ({country['label']})")
-        print(f"Finished {email_addr}")
+        # Success Verification
+        try:
+            # Wait for common success indicators (Sony Music forms often use .thanks or .form-success)
+            sb.wait_for_any_element(".campaign-success, .thanks, .form-success, :contains('Merci')", timeout=15)
+            print(f"✅ Sync SUCCESS verified for {email_addr}")
+            send_discord_notification(f"✅ Item #{NEXT_ROW} VERIFIED: {email_addr} ({country['label']})")
+        except Exception:
+            # If no success message found, it might still have worked but we can't be 100% sure
+            print(f"⚠️ Item #{NEXT_ROW} submitted, but could not verify success message on page.")
+            send_discord_notification(f"⚠️ Item #{NEXT_ROW} submitted: {email_addr} (Unverified)")
+            
+        print(f"Finished item {email_addr}")
             
     except Exception as e:
         print(f"Sync error: {e}")
