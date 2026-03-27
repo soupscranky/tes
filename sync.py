@@ -4,7 +4,7 @@ import random
 import time
 import base64
 import requests
-from seleniumbase import sb_cdp
+from seleniumbase import SB
 
 # Configuration
 TARGET_URL = os.environ.get("SYNC_URL") 
@@ -66,14 +66,18 @@ def select_select2(sb, container_id, search_text):
     """Reliably selects an option from a Select2 dropdown."""
     # 1. Click the dropdown to open it
     sb.click(f'span[aria-labelledby="{container_id}"]')
-    sb.sleep(1.5)
+    sb.sleep(1)
     
-    # 2. Type into the generated search field
+    # 2. Type the name to filter options
     sb.type('input.select2-search__field', search_text)
     sb.sleep(1.5)
     
-    # 3. Press Enter to select the top match
-    sb.press_keys('input.select2-search__field', '\n')
+    # 3. Explicitly click the highlighted result
+    try:
+        sb.click('.select2-results__option--highlighted')
+    except Exception:
+        sb.press_keys('input.select2-search__field', '\n')
+    
     sb.sleep(1)
 
 def execute_sync():
@@ -89,7 +93,7 @@ def execute_sync():
     except Exception:
         return
 
-    if NEXT_ROW > len(accounts):
+    if NEXT_ROW >= len(accounts):
         print(f"Sync complete. (Index {NEXT_ROW})")
         return
 
@@ -102,58 +106,63 @@ def execute_sync():
     sync_progress(NEXT_ROW + 1)
     
     is_gh = os.environ.get("GITHUB_ACTIONS") == "true"
-    sb = sb_cdp.Chrome(TARGET_URL, headless=is_gh)
     
-    try:
-        # Wait for fields to load
-        sb.wait_for_element("#field_email_address", timeout=20)
-        
-        # Identity
-        sb.type("#field_email_address", email_addr)
-        sb.type("#field_first_name", first_name)
-        
-        # Country Selection
-        country = random.choice(COUNTRIES)
-        print(f"Selecting Country: {country['label']}")
-        select_select2(sb, "select2-field_country_region-container", country["label"])
-        
-        # Wait for dynamic province list to update
-        sb.sleep(2)
-        
-        # Province/Department Selection
-        state_val = random.choice(country["states"])
-        print(f"Selecting Region: {state_val}")
-        select_select2(sb, "select2-field_state-container", state_val)
-        
-        # Confirmation (Age Checkbox)
-        sb.click("#custom_checkbox_4_0")
-        sb.sleep(3)
-        
-        # Submit
-        sb.click("#form-submit")
-        sb.sleep(2)
-
-        print(f"Waiting for 15s for success page to laod")
-        sb.sleep(15)
-        
-        # Success Verification
+    # Using the high-level SB API for full compatibility with verify logic
+    with SB(uc=True, headless=is_gh) as sb:
         try:
-            # Wait for the exact 'MERCI!' message found on the success page
-            sb.wait_for_any_element("h1:contains('MERCI!'), h4:contains('partie de Team'), .campaign-success, .thanks", timeout=20)
-            print(f"done.")
-            send_discord_notification(f"Item #{NEXT_ROW} VERIFIED: {email_addr} ({country['label']})")
-        except Exception:
-            # If no success message found, it might still have worked but we can't be 100% sure
-            print(f"Could not confirm success.")
-            send_discord_notification(f"Item #{NEXT_ROW} submitted: {email_addr} (Unverified)")
+            sb.open(TARGET_URL)
             
-        print(f"Finished item {email_addr}")
+            # Wait for fields to load
+            sb.wait_for_element("#field_email_address", timeout=20)
             
-    except Exception as e:
-        print(f"Sync error: {e}")
-        send_discord_notification(f"❌ Sync #{NEXT_ROW} failed: {email_addr}")
-    finally:
-        sb.driver.stop()
+            # Identity
+            sb.type("#field_email_address", email_addr)
+            sb.type("#field_first_name", first_name)
+            
+            # Country Selection
+            country = random.choice(COUNTRIES)
+            print(f"Selecting Country: {country['label']}")
+            select_select2(sb, "select2-field_country_region-container", country["label"])
+            
+            # Wait for dynamic province list to update
+            sb.sleep(2)
+            
+            # Province/Department Selection
+            state_val = random.choice(country["states"])
+            print(f"Selecting Region: {state_val}")
+            select_select2(sb, "select2-field_state-container", state_val)
+            
+            # Confirmation (Age Checkbox)
+            sb.click("#custom_checkbox_4_0")
+            sb.sleep(3)
+            
+            # Submit
+            sb.click("#form-submit")
+            sb.sleep(2)
+
+            # Success Verification (Bulletproof Snippet)
+            try:
+                print("Verifying success...")
+                # 1. The Bulletproof Wait: Wait for exact text inside container
+                sb.wait_for_text("MERCI!", "div#thank-you-content h1.form-heading", timeout=25)
+                
+                print("done.")
+                send_discord_notification(f"Sync SUCCESS verified for {email_addr}")
+            except Exception as e:
+                # Print actual error and current URL
+                print(f"Could not confirm success. Reason: {type(e).__name__} - {str(e)}")
+                try:
+                    print(f"Bot is currently looking at URL: {sb.get_current_url()}")
+                    sb.save_screenshot("verify_fail.png")
+                except:
+                    pass
+                send_discord_notification(f"⚠️ item #{NEXT_ROW} submitted: {email_addr} (Unverified)")
+                
+            print(f"Finished item {email_addr}")
+                
+        except Exception as e:
+            print(f"Sync error: {e}")
+            send_discord_notification(f"❌ Sync #{NEXT_ROW} failed: {email_addr}")
 
 if __name__ == "__main__":
     execute_sync()
