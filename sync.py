@@ -100,7 +100,7 @@ def execute_sync():
     account = accounts[NEXT_ROW]
     email_addr = account["email"]
     first_name = account["first_name"]
-    print(f"Processing Item {NEXT_ROW}: {email_addr}")
+    print(f"Processing Item {NEXT_ROW}")
     
     # Update progress for next run
     sync_progress(NEXT_ROW + 1)
@@ -158,7 +158,7 @@ def execute_sync():
                     pass
                 send_discord_notification(f"⚠️ item #{NEXT_ROW} submitted: {email_addr} (Unverified)")
                 
-            print(f"Finished item {email_addr}")
+            print(f"Finished item.")
                 
         except Exception as e:
             print(f"Sync error: {e}")
