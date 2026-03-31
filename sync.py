@@ -414,7 +414,6 @@ def run_signup(data: dict, row: int) -> tuple[bool, str]:
 
     with SB(
         uc=True,
-        test=True,
         locale="fr-FR",
         browser="chrome",
         headless=True,
