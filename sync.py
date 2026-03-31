@@ -1,14 +1,11 @@
-
 import base64
 import csv
 import io
 import os
 import sys
 import time
-import json
 import requests
 from datetime import datetime
-from typing import Optional
 
 from seleniumbase import SB
 
@@ -25,12 +22,32 @@ GITHUB_API = "https://api.github.com"
 
 # Form field IDs (confirmed by user)
 FIELD_FIRST = "form_container_name_0"
-FIELD_LAST  = "form_container_name_1"
+FIELD_LAST = "form_container_name_1"
 FIELD_EMAIL = "form_container_email_0"
-FIELD_CONF  = "form_container_email_1"
+FIELD_CONF = "form_container_email_1"
 FIELD_PHONE = "form_container_phone"
 FIELD_AGREE = "form_container_agree"
-IFRAME_ID   = "n2cFnX"
+IFRAME_ID = "n2cFnX"
+
+# Success phrases (must appear in iframe body after successful signup)
+SUCCESS_PHRASES = [
+    "vous \u00eates inscrit",
+    "merci",
+    "nous allons vous contacter",
+    "prochainement",
+    "lundi 6 avril 2026",
+    "6 avril 2026",
+    "confirmation",
+    "inscription confirmée",
+]
+
+# Blocked phrases — email already registered, form stays open
+# Must check with word boundaries to avoid false positives like "d'acc\u00e9der"
+FAIL_FORM_STILL_OPEN = [
+    ("vous ne pouvez pas", "inscri"),
+    ("already registered", None),
+    ("d\u00e9j\u00e0 inscrit", None),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -52,7 +69,7 @@ def discord_notify(status: str, message: str, row: int) -> None:
             "title": f"Signup #{row} — {status}",
             "description": message,
             "color": color,
-            "footer": {"text": "Paris La Défense Arena • Céline Dion 2026"},
+            "footer": {"text": "Paris La D\u00e9fense Arena \u2022 C\u00e9line Dion 2026"},
             "timestamp": datetime.utcnow().isoformat() + "Z"
         }]
     }
@@ -97,22 +114,23 @@ def parse_csv() -> dict:
     reader = csv.DictReader(io.StringIO(decoded), delimiter=",", quotechar='"')
     rows = list(reader)
     if NEXT_ROW < 1 or NEXT_ROW > len(rows):
-        raise ValueError(f"NEXT_ROW={NEXT_ROW} out of range (1–{len(rows)}).")
+        raise ValueError(f"NEXT_ROW={NEXT_ROW} out of range (1\u2013{len(rows)}).")
     return rows[NEXT_ROW - 1]
 
 
 # ---------------------------------------------------------------------------
-# Cookie banner — top-level page (outside iframe)
+# Cookie banner — top-level page
 # ---------------------------------------------------------------------------
 
 def dismiss_cookies(sb: SB) -> None:
     """Click OneTrust reject-all button at top-level page."""
+    # No return statement — uc_driver can't parse return inside if/blocks
     script = (
         "var btn = document.querySelector('#onetrust-reject-all-handler');"
         "if (btn && btn.offsetParent !== null) { btn.click(); }"
     )
     try:
-        sb.evaluate(script)  # no return — avoids SyntaxError in uc_driver
+        sb.evaluate(script)
         sb.sleep(0.5)
         log("Cookie dismiss: ok")
     except Exception as e:
@@ -125,14 +143,13 @@ def dismiss_cookies(sb: SB) -> None:
 
 def fill_form(sb: SB, data: dict) -> dict:
     """
-    Fill all text fields inside the iframe.
-    Uses WebDriver's find_element + send_keys (inside iframe context).
-    IMPORTANT: Re-query each element once, use it immediately, store value
-    only via element.get_attribute() to avoid stale element references.
+    Fill all text fields inside the iframe using WebDriver send_keys.
+    IMPORTANT: Find each element once, use it immediately, store value
+    via element.get_attribute() — avoid stale element references.
     """
     results = {}
-    fn    = data.get("first_name", "").strip()
-    ln    = data.get("last_name", "").strip()
+    fn = data.get("first_name", "").strip()
+    ln = data.get("last_name", "").strip()
     email = data.get("email", "").strip()
     phone = data.get("phone", "").strip()
 
@@ -150,9 +167,9 @@ def fill_form(sb: SB, data: dict) -> dict:
             return False
 
     results["first_name"] = fill_field(f"#{FIELD_FIRST}", fn, "first_name")
-    results["last_name"]  = fill_field(f"#{FIELD_LAST}",  ln, "last_name")
-    results["email"]      = fill_field(f"#{FIELD_EMAIL}", email, "email")
-    results["confirm"]    = fill_field(f"#{FIELD_CONF}",  email, "confirm_email")
+    results["last_name"] = fill_field(f"#{FIELD_LAST}", ln, "last_name")
+    results["email"] = fill_field(f"#{FIELD_EMAIL}", email, "email")
+    results["confirm"] = fill_field(f"#{FIELD_CONF}", email, "confirm_email")
     if phone:
         results["phone"] = fill_field(f"#{FIELD_PHONE}", phone, "phone")
 
@@ -161,24 +178,21 @@ def fill_form(sb: SB, data: dict) -> dict:
 
 def click_agree(sb: SB) -> bool:
     """
-    Click the agree checkbox.
-    The checkbox (#form_container_agree) has display:none.
-    Its label (label[for='form_container_agree']) is visible.
-    Use slow_click which scrolls + clicks via CDP.
-    Verification uses driver.execute_script (no return to avoid uc_driver error).
+    The checkbox #form_container_agree has display:none.
+    Its <label for="form_container_agree"> is visible — click that instead.
+    slow_click handles CDP scroll + click (works inside iframe context).
+    Verification uses sb.driver.execute_script (no return in statement).
     """
     try:
         sb.slow_click("label[for='form_container_agree']")
         sb.sleep(0.3)
-        # Verify via driver.execute_script — no return statement
+        # Verify — use driver.execute_script with separate window._ read
         sb.driver.execute_script(
             "var el = document.querySelector('#form_container_agree'); "
             "if (el) { window._agree_checked = el.checked; } "
             "else { window._agree_checked = null; }"
         )
-        checked = sb.driver.execute_script(
-            "return window._agree_checked;"
-        )
+        checked = sb.driver.execute_script("return window._agree_checked;")
         log(f"Agree checkbox: checked={checked}")
         return bool(checked)
     except Exception as e:
@@ -189,7 +203,7 @@ def click_agree(sb: SB) -> bool:
 def click_submit(sb: SB) -> str:
     """
     Click the S'INSCRIRE / SIGN UP button.
-    Use slow_click which handles CDP scroll-into-view + click.
+    slow_click handles CDP scroll-into-view + click.
     """
     try:
         sb.slow_click("button.form_submit")
@@ -204,39 +218,23 @@ def click_submit(sb: SB) -> str:
 # Success detection
 # ---------------------------------------------------------------------------
 
-SUCCESS_PHRASES = [
-    "vous êtes inscrit",
-    "merci",
-    "nous allons vous contacter",
-    "prochainement",
-    "lundi 6 avril 2026",
-    "6 avril 2026",
-    "confirmation",
-    "inscription confirmée",
-]
-# These phrases indicate the form stayed open (registration blocked / already registered)
-FAIL_FORM_STILL_OPEN = [
-    ("vous ne pouvez pas", "inscri"),   # "Vous ne pouvez pas vous inscrire" (with inscri nearby)
-    ("already registered", None),
-    ("d\u00e9j\u00e0 inscrit", None),
-]
-
-
 def detect_success(sb: SB) -> tuple[bool, str]:
     """
-    Detect signup success inside the iframe context.
-    Uses sb.driver.execute_script (inside iframe) to read body text.
+    Detect signup success inside the iframe.
+    Uses sb.driver.execute_script to read body text (inside iframe context).
     """
     try:
         body_el = sb.find_element("body")
         body_text = body_el.text or ""
         body_lower = body_text.lower()
-    except Exception as e:
+    except Exception:
         body_text = ""
         body_lower = ""
 
     matched_ok = [p for p in SUCCESS_PHRASES if p.lower() in body_lower]
-    # Blocked detection: check tuple pairs (both must be present in body)
+
+    # Blocked detection: both phrases must be present (guards against
+    # "d'acc\u00e9der" being misidentified as "d\u00e9j\u00e0")
     matched_blocked = []
     for phrase1, phrase2 in FAIL_FORM_STILL_OPEN:
         if phrase1.lower() in body_lower:
@@ -250,9 +248,8 @@ def detect_success(sb: SB) -> tuple[bool, str]:
     except Exception:
         form_gone = True
 
-    # Success requires ≥2 confirmation phrases OR (form gone AND ≥1 phrase)
     is_success = len(matched_ok) >= 2 or (form_gone and len(matched_ok) >= 1)
-    fail_blocked = len(matched_blocked) > 0  # Already registered / blocked
+    fail_blocked = len(matched_blocked) > 0
 
     log(f"detect_success: matched_ok={matched_ok}, form_gone={form_gone}, blocked={matched_blocked}")
 
@@ -271,14 +268,13 @@ def wait_for_result(sb: SB, timeout: int = 15) -> tuple[bool, str]:
     log(f"Waiting for result (timeout={timeout}s)…")
     for i in range(timeout):
         sb.sleep(1)
-        # Check for blocked / already registered via driver script (faster than detect_success)
-        # Use word boundaries to avoid matching "d'accéder" or similar
+        # Early exit: blocked / already registered
         try:
             sb.driver.execute_script(
                 "var t = (document.body ? (document.body.innerText||document.body.textContent||'') : '').toLowerCase();"
                 "window._blocked = (t.indexOf('vous ne pouvez pas') !== -1 && t.indexOf('inscri') !== -1) || "
                 "               t.indexOf('already registered') !== -1 || "
-                "               (t.indexOf('d\\u00e9j\\u00e0') !== -1 && t.indexOf('inscrit') !== -1);"
+                "               (t.indexOf('d\u00e9j\u00e0') !== -1 && t.indexOf('inscrit') !== -1);"
             )
             blocked = sb.driver.execute_script("return window._blocked;")
             if blocked:
@@ -310,30 +306,38 @@ def run_signup(data: dict, row: int) -> tuple[bool, str]:
         # ── Open page ─────────────────────────────────────────────────────
         sb.open(SIGNUP_URL)
         log(f"Page URL: {sb.get_current_url()}")
-        sb.sleep(5)  # Wait for campaign iframe to appear
+        sb.sleep(5)  # Wait for campaign iframe to load
 
         # ── Dismiss top-level cookie banner ─────────────────────────────
         dismiss_cookies(sb)
         sb.sleep(1)
 
         # ── Switch into n2cFnX iframe ───────────────────────────────────
+        # Two critical fixes vs earlier version:
+        # 1. invisible=True — skips WebDriver visibility check on n2cFnX
+        #    itself (CI may not report sub-frame visibility correctly).
+        # 2. Form fields are DYNAMICALLY loaded inside n2cFnX — they don't
+        #    exist in the DOM at switch time. We wait for them separately.
         log(f"Switching into iframe#{IFRAME_ID}…")
         try:
-            sb.switch_to_frame(IFRAME_ID, timeout=8)
+            sb.switch_to_frame(IFRAME_ID, timeout=8, invisible=True)
             log(f"Switched to iframe#{IFRAME_ID}")
         except Exception as e:
             sb.save_screenshot(f"error_no_iframe_row_{row}.png")
             return False, f"Could not switch to iframe#{IFRAME_ID}: {e}"
 
-    # Wait for form to be fully rendered in iframe
-        sb.wait_for_element_present(f"#{FIELD_FIRST}", timeout=10)
-        sb.sleep(0.3)
+        # ── Wait for dynamically-loaded form fields to appear ───────────
+        # The form content (#form_container_name_0 etc.) is NOT in the DOM
+        # when we first switch — it loads asynchronously inside n2cFnX.
+        # 15s timeout gives the dynamic loader enough time in CI.
+        sb.wait_for_element_present(f"#{FIELD_FIRST}", timeout=15)
+        sb.sleep(0.5)
+        log("Form fields are present in DOM")
 
-        # Fill form ───────────────────────────────────────────────────
+        # ── Fill form ───────────────────────────────────────────────────
         fill_results = fill_form(sb, data)
         log(f"Fill results: {fill_results}")
 
-        # Quick verification: first_name and email must be non-empty
         fn_ok = fill_results.get("first_name", False)
         em_ok = fill_results.get("email", False)
         if not fn_ok or not em_ok:
@@ -342,7 +346,7 @@ def run_signup(data: dict, row: int) -> tuple[bool, str]:
 
         sb.sleep(0.3)
 
-        # ── Click agree checkbox (via label) ────────────────────────────
+        # ── Click agree checkbox (via visible label) ────────────────────
         agree_ok = click_agree(sb)
         if not agree_ok:
             sb.save_screenshot(f"error_agree_row_{row}.png")
@@ -360,7 +364,7 @@ def run_signup(data: dict, row: int) -> tuple[bool, str]:
         # ── Wait for result ─────────────────────────────────────────────
         is_success, result_msg = wait_for_result(sb, timeout=15)
 
-        # ── Screenshot ──────────────────────────────────────────────────
+        # ── Screenshot ───────────────────────────────────────────────────
         ss_name = f"result_row_{row}.png"
         try:
             sb.save_screenshot(ss_name)
@@ -368,7 +372,7 @@ def run_signup(data: dict, row: int) -> tuple[bool, str]:
         except Exception as e:
             log(f"Screenshot failed: {e}")
 
-        # ── Return to main page ────────────────────────────────────────
+        # ── Return to main page ─────────────────────────────────────────
         try:
             sb.switch_to_default_content()
             log("Returned to default content.")
