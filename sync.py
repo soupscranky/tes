@@ -413,7 +413,6 @@ def run_signup(data: dict, row: int) -> tuple[bool, str]:
     log(f"=== Starting signup row {row} — {data.get('email', 'N/A')} ===")
 
     with SB(
-        uc=True,
         locale="fr-FR",
         browser="chrome",
         headless=True,
