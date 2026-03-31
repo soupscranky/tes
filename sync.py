@@ -31,7 +31,7 @@ IFRAME_ID = "n2cFnX"
 
 # Success phrases (must appear in iframe body after successful signup)
 SUCCESS_PHRASES = [
-    "vous \u00eates inscrit",
+    "vous êtes inscrit",
     "merci",
     "nous allons vous contacter",
     "prochainement",
@@ -42,11 +42,11 @@ SUCCESS_PHRASES = [
 ]
 
 # Blocked phrases — email already registered, form stays open
-# Must check with word boundaries to avoid false positives like "d'acc\u00e9der"
+# Must check with word boundaries to avoid false positives like "d'accéder"
 FAIL_FORM_STILL_OPEN = [
     ("vous ne pouvez pas", "inscri"),
     ("already registered", None),
-    ("d\u00e9j\u00e0 inscrit", None),
+    ("déjà inscrit", None),
 ]
 
 
@@ -69,7 +69,7 @@ def discord_notify(status: str, message: str, row: int) -> None:
             "title": f"Signup #{row} — {status}",
             "description": message,
             "color": color,
-            "footer": {"text": "Paris La D\u00e9fense Arena \u2022 C\u00e9line Dion 2026"},
+            "footer": {"text": "Paris La Défense Arena • Céline Dion 2026"},
             "timestamp": datetime.utcnow().isoformat() + "Z"
         }]
     }
@@ -114,8 +114,27 @@ def parse_csv() -> dict:
     reader = csv.DictReader(io.StringIO(decoded), delimiter=",", quotechar='"')
     rows = list(reader)
     if NEXT_ROW < 1 or NEXT_ROW > len(rows):
-        raise ValueError(f"NEXT_ROW={NEXT_ROW} out of range (1\u2013{len(rows)}).")
+        raise ValueError(f"NEXT_ROW={NEXT_ROW} out of range (1–{len(rows)}).")
     return rows[NEXT_ROW - 1]
+
+
+def dump_iframes(sb: SB, context: str) -> None:
+    """Debug helper: print all top-level iframes."""
+    try:
+        frames = sb.driver.execute_script("""
+        return Array.from(document.querySelectorAll('iframe')).map((f, i) => ({
+            index: i,
+            id: f.id,
+            name: f.name,
+            src: f.src,
+            title: f.title,
+            loading: f.getAttribute('loading'),
+            visible: !!(f.offsetWidth || f.offsetHeight || f.getClientRects().length)
+        }));
+        """)
+        log(f"Iframes ({context}): {frames}")
+    except Exception as e:
+        log(f"dump_iframes error ({context}): {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +143,6 @@ def parse_csv() -> dict:
 
 def dismiss_cookies(sb: SB) -> None:
     """Click OneTrust reject-all button at top-level page."""
-    # No return statement — uc_driver can't parse return inside if/blocks
     script = (
         "var btn = document.querySelector('#onetrust-reject-all-handler');"
         "if (btn && btn.offsetParent !== null) { btn.click(); }"
@@ -135,6 +153,97 @@ def dismiss_cookies(sb: SB) -> None:
         log("Cookie dismiss: ok")
     except Exception as e:
         log(f"Cookie dismiss error: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Iframe handling
+# ---------------------------------------------------------------------------
+
+def wait_for_iframe_ready(sb: SB, iframe_id: str, timeout: int = 20) -> bool:
+    """
+    Wait until the iframe exists in DOM and its contentDocument.readyState
+    is complete or interactive.
+    """
+    log(f"Waiting for iframe #{iframe_id} to exist in DOM…")
+    end = time.time() + timeout
+
+    while time.time() < end:
+        try:
+            exists = sb.driver.execute_script(
+                f"return !!document.querySelector('#{iframe_id}');"
+            )
+            if exists:
+                log(f"Iframe #{iframe_id} exists in DOM")
+                break
+        except Exception:
+            pass
+        sb.sleep(0.5)
+    else:
+        return False
+
+    log(f"Waiting for iframe #{iframe_id} contentDocument to be ready…")
+    end = time.time() + timeout
+    last_state = None
+
+    while time.time() < end:
+        try:
+            state = sb.driver.execute_script(f"""
+                var f = document.querySelector('#{iframe_id}');
+                if (!f) return "missing";
+                try {{
+                    if (!f.contentWindow || !f.contentDocument) return "no-document";
+                    return f.contentDocument.readyState || "unknown";
+                }} catch(e) {{
+                    return "exception:" + e.message;
+                }}
+            """)
+            if state != last_state:
+                log(f"Iframe readyState: {state}")
+                last_state = state
+
+            if state in ("interactive", "complete"):
+                return True
+        except Exception as e:
+            log(f"wait_for_iframe_ready poll error: {e}")
+
+        sb.sleep(0.5)
+
+    return False
+
+
+def switch_to_signup_iframe(sb: SB, row: int) -> tuple[bool, str]:
+    """
+    Robustly switch into the signup iframe using WebElement-based switching.
+    This avoids flaky index-based switching in UC headless mode.
+    """
+    dump_iframes(sb, "before iframe prep")
+
+    # Try to disable lazy loading to reduce flakiness in CI
+    try:
+        sb.driver.execute_script(f"""
+            var f = document.querySelector('#{IFRAME_ID}');
+            if (f) {{
+                f.loading = 'eager';
+                f.scrollIntoView({{block: 'center'}});
+            }}
+        """)
+        log(f"Set iframe #{IFRAME_ID} loading='eager' and scrolled into view")
+    except Exception as e:
+        log(f"Could not tweak iframe loading behavior: {e}")
+
+    if not wait_for_iframe_ready(sb, IFRAME_ID, timeout=20):
+        dump_iframes(sb, "iframe not ready")
+        sb.save_screenshot(f"error_no_iframe_row_{row}.png")
+        return False, f"Iframe #{IFRAME_ID} not ready"
+
+    try:
+        iframe_el = sb.find_element(f"#{IFRAME_ID}", timeout=10)
+        sb.driver.switch_to.frame(iframe_el)
+        log(f"Switched to iframe #{IFRAME_ID} via WebElement")
+        return True, "OK"
+    except Exception as e:
+        sb.save_screenshot(f"error_no_iframe_row_{row}.png")
+        return False, f"Could not switch to iframe #{IFRAME_ID}: {e}"
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +261,7 @@ def fill_form(sb: SB, data: dict) -> dict:
     ln = data.get("last_name", "").strip()
     email = data.get("email", "").strip()
     phone = data.get("phone", "").strip()
+    country = data.get("country", "").strip()
 
     def fill_field(selector: str, value: str, name: str) -> bool:
         try:
@@ -170,6 +280,17 @@ def fill_form(sb: SB, data: dict) -> dict:
     results["last_name"] = fill_field(f"#{FIELD_LAST}", ln, "last_name")
     results["email"] = fill_field(f"#{FIELD_EMAIL}", email, "email")
     results["confirm"] = fill_field(f"#{FIELD_CONF}", email, "confirm_email")
+
+    if country:
+        try:
+            sb.select_option_by_text("select", country)
+            sb.sleep(0.2)
+            log(f"Selected country: {country}")
+            results["country"] = True
+        except Exception as e:
+            log(f"country select error: {e}")
+            results["country"] = False
+
     if phone:
         results["phone"] = fill_field(f"#{FIELD_PHONE}", phone, "phone")
 
@@ -181,12 +302,11 @@ def click_agree(sb: SB) -> bool:
     The checkbox #form_container_agree has display:none.
     Its <label for="form_container_agree"> is visible — click that instead.
     slow_click handles CDP scroll + click (works inside iframe context).
-    Verification uses sb.driver.execute_script (no return in statement).
+    Verification uses sb.driver.execute_script.
     """
     try:
         sb.slow_click("label[for='form_container_agree']")
         sb.sleep(0.3)
-        # Verify — use driver.execute_script with separate window._ read
         sb.driver.execute_script(
             "var el = document.querySelector('#form_container_agree'); "
             "if (el) { window._agree_checked = el.checked; } "
@@ -221,7 +341,6 @@ def click_submit(sb: SB) -> str:
 def detect_success(sb: SB) -> tuple[bool, str]:
     """
     Detect signup success inside the iframe.
-    Uses sb.driver.execute_script to read body text (inside iframe context).
     """
     try:
         body_el = sb.find_element("body")
@@ -233,8 +352,6 @@ def detect_success(sb: SB) -> tuple[bool, str]:
 
     matched_ok = [p for p in SUCCESS_PHRASES if p.lower() in body_lower]
 
-    # Blocked detection: both phrases must be present (guards against
-    # "d'acc\u00e9der" being misidentified as "d\u00e9j\u00e0")
     matched_blocked = []
     for phrase1, phrase2 in FAIL_FORM_STILL_OPEN:
         if phrase1.lower() in body_lower:
@@ -268,13 +385,12 @@ def wait_for_result(sb: SB, timeout: int = 15) -> tuple[bool, str]:
     log(f"Waiting for result (timeout={timeout}s)…")
     for i in range(timeout):
         sb.sleep(1)
-        # Early exit: blocked / already registered
         try:
             sb.driver.execute_script(
                 "var t = (document.body ? (document.body.innerText||document.body.textContent||'') : '').toLowerCase();"
                 "window._blocked = (t.indexOf('vous ne pouvez pas') !== -1 && t.indexOf('inscri') !== -1) || "
-                "               t.indexOf('already registered') !== -1 || "
-                "               (t.indexOf('d\u00e9j\u00e0') !== -1 && t.indexOf('inscrit') !== -1);"
+                "                  t.indexOf('already registered') !== -1 || "
+                "                  (t.indexOf('déjà') !== -1 && t.indexOf('inscrit') !== -1);"
             )
             blocked = sb.driver.execute_script("return window._blocked;")
             if blocked:
@@ -308,31 +424,20 @@ def run_signup(data: dict, row: int) -> tuple[bool, str]:
         log(f"Page URL: {sb.get_current_url()}")
         sb.sleep(6)
 
+        dump_iframes(sb, "after page load")
+
         # ── Dismiss top-level cookie banner ─────────────────────────────
         dismiss_cookies(sb)
-        sb.sleep(1)
+        sb.sleep(1.5)
 
-        # ── Switch into n2cFnX iframe ───────────────────────────────────
-        # IMPORTANT: do NOT use sb.evaluate(), sb.wait_for_element_present(),
-        # or string-based switch_to_frame('n2cFnX') — these hang in CI
-        # because CDP-based element finding fails in UC mode headless on
-        # macOS arm64 runner. Instead, use integer index switch_to_frame(0)
-        # which uses WebDriver's native frame-index mechanism.
-        # We use invisible=True to skip the visibility check on the iframe
-        # itself (CI may not report sub-frame visibility correctly).
-        log("Switching into iframe#0 (n2cFnX)…")
-        try:
-            sb.switch_to_frame(0, timeout=10, invisible=True)
-            log("Switched to iframe#0")
-        except Exception as e:
-            sb.save_screenshot(f"error_no_iframe_row_{row}.png")
-            return False, f"Could not switch to iframe: {e}"
+        dump_iframes(sb, "after cookie dismiss")
+
+        # ── Switch into signup iframe ───────────────────────────────────
+        ok, msg = switch_to_signup_iframe(sb, row)
+        if not ok:
+            return False, msg
 
         # ── Wait for dynamically-loaded form fields to appear ───────────
-        # The form content (#form_container_name_0 etc.) is NOT in the DOM
-        # when we first switch — it loads asynchronously inside n2cFnX.
-        # Use sb.find_element with timeout instead of wait_for_element_present
-        # to avoid CDP routing hang.
         log("Waiting for form fields to load…")
         try:
             sb.find_element(f"#{FIELD_FIRST}", timeout=15)
@@ -348,7 +453,9 @@ def run_signup(data: dict, row: int) -> tuple[bool, str]:
 
         fn_ok = fill_results.get("first_name", False)
         em_ok = fill_results.get("email", False)
-        if not fn_ok or not em_ok:
+        cf_ok = fill_results.get("confirm", False)
+
+        if not fn_ok or not em_ok or not cf_ok:
             sb.save_screenshot(f"error_fill_failed_row_{row}.png")
             return False, f"Fields not filled. results={fill_results}"
 
@@ -372,7 +479,7 @@ def run_signup(data: dict, row: int) -> tuple[bool, str]:
         # ── Wait for result ─────────────────────────────────────────────
         is_success, result_msg = wait_for_result(sb, timeout=15)
 
-        # ── Screenshot ───────────────────────────────────────────────────
+        # ── Screenshot ──────────────────────────────────────────────────
         ss_name = f"result_row_{row}.png"
         try:
             sb.save_screenshot(ss_name)
@@ -380,7 +487,7 @@ def run_signup(data: dict, row: int) -> tuple[bool, str]:
         except Exception as e:
             log(f"Screenshot failed: {e}")
 
-        # ── Return to main page ─────────────────────────────────────────
+        # ── Return to main page ────────────────────────────────────────
         try:
             sb.switch_to_default_content()
             log("Returned to default content.")
@@ -400,7 +507,6 @@ def main() -> int:
 
     test_mode = not DATA_CSV_B64
     if test_mode:
-        # Alternate between two test emails
         is_kevin = (NEXT_ROW % 2 == 1)
         if is_kevin:
             email = "kevinhubertus2002@gmail.com"
