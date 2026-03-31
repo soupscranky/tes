@@ -7,20 +7,19 @@ on:
 
 jobs:
   process:
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: "3.9"
 
       - name: Get NEXT_ROW Variable
-        id: vars
         run: |
-          # Use payload if provided, otherwise fallback to repo variable
           PAYLOAD_ROW="${{ github.event.client_payload.next_row }}"
           if [ -n "$PAYLOAD_ROW" ]; then
             echo "NEXT_ROW=$PAYLOAD_ROW" >> $GITHUB_ENV
@@ -33,7 +32,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           seleniumbase install chromedriver
-            
+
+      - name: Execute sync
+        env:
+          DATA_CSV_B64: ${{ secrets.DATA_CSV_B64 }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+          NEXT_ROW: ${{ env.NEXT_ROW }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          FORM_URL: https://signup.ticketmaster.fr/paris-la-defense-arena
+        run: |
+          python sync.py
+
       - name: Upload debug artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -42,14 +52,4 @@ jobs:
           path: |
             *.png
             *.html
-
-      - name: Execute sync
-        env:
-          DATA_CSV_B64: ${{ secrets.DATA_CSV_B64 }}
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
-          NEXT_ROW: ${{ env.NEXT_ROW }}
-          SYNC_URL: ${{ secrets.SYNC_URL }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: |
-          python sync.py
+          if-no-files-found: ignore
