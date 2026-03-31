@@ -307,44 +307,40 @@ def run_signup(data: dict, row: int) -> tuple[bool, str]:
         sb.open(SIGNUP_URL)
         log(f"Page URL: {sb.get_current_url()}")
         sb.sleep(6)
-        # ── Wait for n2cFnX iframe to appear in DOM ─────────────────────
-        # sb.evaluate() hangs in CI (CDP routing issue with macOS arm64
-        # runner). Use sb.wait_for_element_present() instead — it calls
-        # CDP is_element_present() directly and works reliably.
-        log("Waiting for n2cFnX iframe to appear in DOM…")
-        try:
-            sb.wait_for_element_present("#n2cFnX", timeout=20)
-            log("n2cFnX iframe present in DOM")
-        except Exception:
-            sb.save_screenshot(f"error_no_iframe_row_{row}.png")
-            return False, "n2cFnX iframe never appeared in DOM"
-        sb.sleep(0.5)
 
         # ── Dismiss top-level cookie banner ─────────────────────────────
         dismiss_cookies(sb)
         sb.sleep(1)
 
         # ── Switch into n2cFnX iframe ───────────────────────────────────
-        # Two critical fixes vs earlier version:
-        # 1. invisible=True — skips WebDriver visibility check on n2cFnX
-        #    itself (CI may not report sub-frame visibility correctly).
-        # 2. Form fields are DYNAMICALLY loaded inside n2cFnX — they don't
-        #    exist in the DOM at switch time. We wait for them separately.
-        log(f"Switching into iframe#{IFRAME_ID}…")
+        # IMPORTANT: do NOT use sb.evaluate(), sb.wait_for_element_present(),
+        # or string-based switch_to_frame('n2cFnX') — these hang in CI
+        # because CDP-based element finding fails in UC mode headless on
+        # macOS arm64 runner. Instead, use integer index switch_to_frame(0)
+        # which uses WebDriver's native frame-index mechanism.
+        # We use invisible=True to skip the visibility check on the iframe
+        # itself (CI may not report sub-frame visibility correctly).
+        log("Switching into iframe#0 (n2cFnX)…")
         try:
-            sb.switch_to_frame(IFRAME_ID, timeout=8, invisible=True)
-            log(f"Switched to iframe#{IFRAME_ID}")
+            sb.switch_to_frame(0, timeout=10, invisible=True)
+            log("Switched to iframe#0")
         except Exception as e:
             sb.save_screenshot(f"error_no_iframe_row_{row}.png")
-            return False, f"Could not switch to iframe#{IFRAME_ID}: {e}"
+            return False, f"Could not switch to iframe: {e}"
 
         # ── Wait for dynamically-loaded form fields to appear ───────────
         # The form content (#form_container_name_0 etc.) is NOT in the DOM
         # when we first switch — it loads asynchronously inside n2cFnX.
-        # 15s timeout gives the dynamic loader enough time in CI.
-        sb.wait_for_element_present(f"#{FIELD_FIRST}", timeout=15)
-        sb.sleep(0.5)
-        log("Form fields are present in DOM")
+        # Use sb.find_element with timeout instead of wait_for_element_present
+        # to avoid CDP routing hang.
+        log("Waiting for form fields to load…")
+        try:
+            sb.find_element(f"#{FIELD_FIRST}", timeout=15)
+            sb.sleep(0.5)
+            log("Form fields are present in DOM")
+        except Exception:
+            sb.save_screenshot(f"error_form_fields_row_{row}.png")
+            return False, "Form fields did not appear in iframe"
 
         # ── Fill form ───────────────────────────────────────────────────
         fill_results = fill_form(sb, data)
