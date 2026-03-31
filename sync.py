@@ -306,27 +306,19 @@ def run_signup(data: dict, row: int) -> tuple[bool, str]:
         # ── Open page ─────────────────────────────────────────────────────
         sb.open(SIGNUP_URL)
         log(f"Page URL: {sb.get_current_url()}")
-        sb.sleep(2)
-        # Poll for iframe to exist in DOM (CDP-level, handles async load)
+        sb.sleep(6)
+        # ── Wait for n2cFnX iframe to appear in DOM ─────────────────────
+        # sb.evaluate() hangs in CI (CDP routing issue with macOS arm64
+        # runner). Use sb.wait_for_element_present() instead — it calls
+        # CDP is_element_present() directly and works reliably.
         log("Waiting for n2cFnX iframe to appear in DOM…")
-        iframe_found = False
-        for _ in range(20):
-            sb.sleep(1)
-            try:
-                sb.evaluate(
-                    "var el = document.querySelector('#n2cFnX'); "
-                    "window._found = el ? 'yes' : 'no';"
-                )
-                if sb.evaluate("window._found;") == "yes":
-                    iframe_found = True
-                    log("n2cFnX iframe appeared in DOM")
-                    break
-            except Exception:
-                pass
-        if not iframe_found:
+        try:
+            sb.wait_for_element_present("#n2cFnX", timeout=20)
+            log("n2cFnX iframe present in DOM")
+        except Exception:
             sb.save_screenshot(f"error_no_iframe_row_{row}.png")
             return False, "n2cFnX iframe never appeared in DOM"
-        sb.sleep(1)
+        sb.sleep(0.5)
 
         # ── Dismiss top-level cookie banner ─────────────────────────────
         dismiss_cookies(sb)
