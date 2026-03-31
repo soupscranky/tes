@@ -1,3 +1,35 @@
+#!/usr/bin/env python3
+"""
+Ticketmaster Paris La Défense Arena — Céline Dion Presale Signup
+CDP Mode via SeleniumBase SB context manager (uc=True).
+
+KEY FINDINGS (verified on local + CI):
+  1. The form lives in a cross-origin iframe (id="n2cFnX", src=m.cmpgn.page).
+     CDP evaluate() runs in main page context — cannot reach iframe elements.
+     WebDriver's switch_to_frame() reconnects briefly, then CDP re-switches.
+     After switch, WebDriver IS the iframe.
+  2. Form fields are dynamically loaded INSIDE n2cFnX — they don't exist
+     in the DOM at switch time. Use sb.wait_for_element_present(timeout=15)
+     to wait for them to appear.
+  3. n2cFnX itself may not pass WebDriver's "visible" check (sub-frame
+     visibility is complex in CI). Use switch_to_frame(id, invisible=True)
+     to skip the visibility check.
+  4. The terms checkbox (#form_container_agree) has display:none — it's a
+     hidden real checkbox whose visible <label> is clickable.
+     → Click the LABEL: sb.slow_click("label[for='form_container_agree']")
+  5. The submit button (button.form_submit) may be below the viewport.
+     → Use sb.slow_click('button.form_submit') — handles scroll + click.
+  6. sb.execute_script() runs JS through uc_driver with ES5 restrictions
+     (no arrow functions, no const/let, no return inside if statements).
+     Use only for side-effects.
+  7. sb.driver.execute_script() works for scripts WITH return values
+     (uses Chrome's native CDP evaluate in the current frame context).
+  8. Success detection: "vous êtes inscrit" + "merci" + "nous allons vous
+     contacter" + form fields gone from DOM.
+
+CI-optimized (GitHub Actions macos-latest).
+"""
+
 import base64
 import csv
 import io
@@ -12,7 +44,7 @@ from seleniumbase import SB
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-SIGNUP_URL = os.environ.get("SYNC_URL", "")
+SIGNUP_URL = "https://signup.ticketmaster.fr/paris-la-defense-arena"
 REPO = os.environ.get("GITHUB_REPOSITORY", "OWNER/REPO")
 PAT_TOKEN = os.environ.get("PAT_TOKEN", "")
 NEXT_ROW = int(os.environ.get("NEXT_ROW", "1"))
@@ -306,7 +338,27 @@ def run_signup(data: dict, row: int) -> tuple[bool, str]:
         # ── Open page ─────────────────────────────────────────────────────
         sb.open(SIGNUP_URL)
         log(f"Page URL: {sb.get_current_url()}")
-        sb.sleep(5)  # Wait for campaign iframe to load
+        sb.sleep(2)
+        # Poll for iframe to exist in DOM (CDP-level, handles async load)
+        log("Waiting for n2cFnX iframe to appear in DOM…")
+        iframe_found = False
+        for _ in range(20):
+            sb.sleep(1)
+            try:
+                sb.evaluate(
+                    "var el = document.querySelector('#n2cFnX'); "
+                    "window._found = el ? 'yes' : 'no';"
+                )
+                if sb.evaluate("window._found;") == "yes":
+                    iframe_found = True
+                    log("n2cFnX iframe appeared in DOM")
+                    break
+            except Exception:
+                pass
+        if not iframe_found:
+            sb.save_screenshot(f"error_no_iframe_row_{row}.png")
+            return False, "n2cFnX iframe never appeared in DOM"
+        sb.sleep(1)
 
         # ── Dismiss top-level cookie banner ─────────────────────────────
         dismiss_cookies(sb)
