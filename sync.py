@@ -420,7 +420,20 @@ def run_signup(data: dict, row: int) -> tuple[bool, str]:
         # ── Open page ─────────────────────────────────────────────────────
         sb.open(SIGNUP_URL)
         log(f"Page URL: {sb.get_current_url()}")
-        sb.sleep(6)
+        try:
+            html = sb.get_page_source()
+            with open(f"page_source_row_{row}.html", "w", encoding="utf-8") as f:
+                f.write(html)
+            log(f"Saved page source: page_source_row_{row}.html")
+        except Exception as e:
+            log(f"Could not save page source: {e}")
+
+        try:
+            sb.save_screenshot(f"page_loaded_row_{row}.png")
+            log(f"Saved screenshot: page_loaded_row_{row}.png")
+        except Exception as e:
+            log(f"Could not save screenshot: {e}")
+            sb.sleep(6)
 
         dump_iframes(sb, "after page load")
 
